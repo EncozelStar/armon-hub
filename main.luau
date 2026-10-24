@@ -1,3 +1,17 @@
+ได้เพิ่มการตรวจจับค่า **`Embers` (หรือ `Ember`)** เข้าไปในระบบให้เรียบร้อยแล้วครับ!
+
+### 🛠 รายละเอียดที่เพิ่มให้:
+1. **ดึงจาก GUI หน้าจอโดยตรง**: `PlayerGui.ClientGui.Mainframe.Embers.Amount.Text`
+2. **Fallback ไปยัง Server Data**: ถ้า UI ยังไม่โหลดหรือเป็น 0 จะดึงจาก `blData.Embers`
+3. **ส่งข้อมูลเข้า Web API**:
+   - `account.embers` และ `account.ember`
+   - `account.stats.embers` และ `account.stats.ember`
+
+---
+
+### 📜 โค้ดฉบับสมบูรณ์ (Ryo + Acumen + Embers)
+
+```lua
 -- ==============================================================================
 --                      ARMON HUB - UNIVERSAL ROBLOX SCRIPT
 --                 Supports Multi-Map Auto Detection & Live Sync
@@ -110,7 +124,7 @@ local function getBloodlinesData()
     return nil
 end
 
-local function scanBackpack()
+local function scanBackpack(blData)
     local items = {}
     local itemMap = {}
 
@@ -122,7 +136,7 @@ local function scanBackpack()
     end
 
     -- 1. ตรวจสอบข้อมูลไอเทมจาก Bloodlines โดยตรง (Hotbar 1-12 & กระเป๋า Inventory 1-154)
-    local blData = getBloodlinesData()
+    blData = blData or getBloodlinesData()
     if blData then
         -- ตรวจสอบช่อง Hotbar / Loadout (1 - 12)
         if blData.Loadout and typeof(blData.Loadout) == "table" then
@@ -223,14 +237,63 @@ local function scanBackpack()
     return items
 end
 
-local function getPlayerData()
+local function getPlayerData(blData)
     local level = 1
     local wen = 0
+    local ryo = 0
+    local acumen = 0
+    local embers = 0
     local race = "Human"
     local clan = "None"
 
-    -- ตรวจสอบข้อมูลจาก Bloodlines Data
-    local blData = getBloodlinesData()
+    -- 1. [ลำดับแรก] ดึงจาก GUI ของ Bloodlines โดยตรง (ClientGui.Mainframe)
+    pcall(function()
+        local clientGui = player:FindFirstChild("PlayerGui") and player.PlayerGui:FindFirstChild("ClientGui")
+        if clientGui and clientGui:FindFirstChild("Mainframe") then
+            local mf = clientGui.Mainframe
+
+            -- Ryo จาก ClientGui.Mainframe.Ryo.Amount.Text
+            if mf:FindFirstChild("Ryo") and mf.Ryo:FindFirstChild("Amount") then
+                local obj = mf.Ryo.Amount
+                local raw = (obj:IsA("TextLabel") or obj:IsA("TextBox")) and obj.Text or (obj.Value and tostring(obj.Value))
+                if raw then
+                    local clean = tostring(raw):gsub("[^%d]", "")
+                    if clean ~= "" then
+                        ryo = tonumber(clean) or ryo
+                        wen = ryo
+                    end
+                end
+            end
+
+            -- Acumen จาก ClientGui.Mainframe.Acumen.Amount.Text
+            if mf:FindFirstChild("Acumen") and mf.Acumen:FindFirstChild("Amount") then
+                local obj = mf.Acumen.Amount
+                local raw = (obj:IsA("TextLabel") or obj:IsA("TextBox")) and obj.Text or (obj.Value and tostring(obj.Value))
+                if raw then
+                    local clean = tostring(raw):gsub("[^%d]", "")
+                    if clean ~= "" then
+                        acumen = tonumber(clean) or acumen
+                        level = acumen
+                    end
+                end
+            end
+
+            -- Embers จาก ClientGui.Mainframe.Embers.Amount.Text
+            if mf:FindFirstChild("Embers") and mf.Embers:FindFirstChild("Amount") then
+                local obj = mf.Embers.Amount
+                local raw = (obj:IsA("TextLabel") or obj:IsA("TextBox")) and obj.Text or (obj.Value and tostring(obj.Value))
+                if raw then
+                    local clean = tostring(raw):gsub("[^%d]", "")
+                    if clean ~= "" then
+                        embers = tonumber(clean) or embers
+                    end
+                end
+            end
+        end
+    end)
+
+    -- 2. ดึงจาก Bloodlines Data (กรณี GUI ยังไม่โหลดหรือเป็น 0)
+    blData = blData or getBloodlinesData()
     if blData then
         if blData.Clan and tostring(blData.Clan) ~= "" then
             clan = tostring(blData.Clan)
@@ -238,39 +301,60 @@ local function getPlayerData()
         if blData.Bloodline and tostring(blData.Bloodline) ~= "" then
             race = tostring(blData.Bloodline)
         end
-        if blData.Ryo then
-            wen = tonumber(blData.Ryo) or wen
+        if ryo == 0 and blData.Ryo then
+            ryo = tonumber(blData.Ryo) or 0
+            wen = ryo
         end
-        if blData.Acumen then
-            level = tonumber(blData.Acumen) or level
+        if acumen == 0 and blData.Acumen then
+            acumen = tonumber(blData.Acumen) or 0
+            level = acumen
+        end
+        if embers == 0 and blData.Embers then
+            embers = tonumber(blData.Embers) or 0
         end
     end
 
-    -- ตรวจสอบ leaderstats
+    -- 3. ตรวจสอบ leaderstats เผื่อเกมอื่นๆ
     local leaderstats = player:FindFirstChild("leaderstats")
     if leaderstats then
         for _, stat in ipairs(leaderstats:GetChildren()) do
             local sName = stat.Name:lower()
-            if sName:find("level") or sName:find("lvl") then
-                level = tonumber(stat.Value) or level
-            elseif sName:find("wen") or sName:find("cash") or sName:find("beli") or sName:find("gold") or sName:find("yen") or sName:find("ryo") then
-                wen = tonumber(stat.Value) or wen
-            elseif sName:find("clan") then
+            if sName:find("ember") and embers == 0 then
+                embers = tonumber(stat.Value) or embers
+            elseif sName:find("acumen") and acumen == 0 then
+                acumen = tonumber(stat.Value) or acumen
+                level = acumen
+            elseif sName:find("level") or sName:find("lvl") then
+                if level == 1 then level = tonumber(stat.Value) or level end
+            elseif sName:find("ryo") and ryo == 0 then
+                ryo = tonumber(stat.Value) or ryo
+                wen = ryo
+            elseif sName:find("wen") or sName:find("cash") or sName:find("beli") or sName:find("gold") or sName:find("yen") then
+                if wen == 0 then wen = tonumber(stat.Value) or wen end
+            elseif sName:find("clan") and clan == "None" then
                 clan = tostring(stat.Value)
-            elseif sName:find("race") then
+            elseif sName:find("race") and race == "Human" then
                 race = tostring(stat.Value)
             end
         end
     end
 
-    -- ตรวจสอบ Data หรือ Stats Folder อื่นๆ ของแต่ละเกม
+    -- 4. ตรวจสอบ Stats หรือ Data Folder อื่นๆ
     local statsFolder = player:FindFirstChild("Stats") or player:FindFirstChild("Data")
     if statsFolder then
         for _, stat in ipairs(statsFolder:GetChildren()) do
             local sName = stat.Name:lower()
-            if sName:find("level") and level == 1 then
+            if sName:find("ember") and embers == 0 then
+                embers = tonumber(stat.Value) or embers
+            elseif sName:find("acumen") and acumen == 0 then
+                acumen = tonumber(stat.Value) or acumen
+                level = acumen
+            elseif sName:find("level") and level == 1 then
                 level = tonumber(stat.Value) or level
-            elseif (sName:find("wen") or sName:find("cash") or sName:find("money") or sName:find("yen") or sName:find("ryo")) and wen == 0 then
+            elseif sName:find("ryo") and ryo == 0 then
+                ryo = tonumber(stat.Value) or ryo
+                wen = ryo
+            elseif (sName:find("wen") or sName:find("cash") or sName:find("money") or sName:find("yen")) and wen == 0 then
                 wen = tonumber(stat.Value) or wen
             elseif sName:find("clan") and clan == "None" then
                 clan = tostring(stat.Value)
@@ -287,6 +371,9 @@ local function getPlayerData()
     return {
         level = level,
         wen = wen,
+        ryo = ryo,
+        acumen = acumen,
+        embers = embers,
         race = race,
         clan = clan,
         hp = hp,
@@ -295,8 +382,9 @@ local function getPlayerData()
 end
 
 local function sendLiveSync()
-    local pData = getPlayerData()
-    local backpackItems = scanBackpack()
+    local blData = getBloodlinesData()
+    local pData = getPlayerData(blData)
+    local backpackItems = scanBackpack(blData)
 
     local payload = {
         apiKey = Config.api_key,
@@ -314,12 +402,20 @@ local function sendLiveSync()
             race = pData.race,
             clan = pData.clan,
             wen = pData.wen,
+            ryo = pData.ryo,
+            acumen = pData.acumen,
+            embers = pData.embers,      -- [เพิ่มใหม่] รายงานค่า Embers
+            ember = pData.embers,       -- [เพิ่มใหม่] รองรับทั้ง ember/embers
             items = backpackItems,
             stats = {
                 hp = pData.hp,
                 maxHp = pData.maxHp,
                 stamina = 100,
-                maxStamina = 100
+                maxStamina = 100,
+                ryo = pData.ryo,
+                acumen = pData.acumen,
+                embers = pData.embers,  -- [เพิ่มใหม่] ใน stats
+                ember = pData.embers
             }
         },
         system = {
@@ -350,10 +446,11 @@ end
 -- ส่งข้อมูลทันทีเมื่อเปิดสคริปต์
 sendLiveSync()
 
--- วนลูปส่ง Heartbeat ทุกๆ ช่วงเวลาที่กำหนด
+-- วนลูปส่ง Heartbeat ทุกๆ ช่วงเวลาที่กำหนด (sync_interval)
 task.spawn(function()
     while true do
         task.wait(Config.sync_interval or 30)
         sendLiveSync()
     end
 end)
+```
