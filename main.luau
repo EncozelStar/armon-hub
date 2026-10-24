@@ -199,7 +199,16 @@ local function scanBackpack(blData)
         end
     end
 
-    -- แปลงเป็นโครงสร้างส่งเข้าเว็บ (ระบบเว็บจะจับคู่รูปภาพแท้ในระบบให้อัตโนมัติจากชื่อไอเทม)
+    -- โหลดโมดูล GameManager สำหรับดึง Asset ID รูปภาพของเกม
+    local Rep = game:GetService("ReplicatedStorage")
+    local GM = nil
+    pcall(function()
+        if Rep:FindFirstChild("GameManager") then
+            GM = require(Rep.GameManager)
+        end
+    end)
+
+    -- แปลงเป็นโครงสร้างที่เว็บต้องการ
     for name, count in pairs(itemMap) do
         local rarity = "RARE"
         local lower = name:lower()
@@ -211,10 +220,29 @@ local function scanBackpack(blData)
             rarity = "UNCOMMON"
         end
 
+        -- ค้นหา Asset ID และ URL รูปภาพจริงของไอเทม
+        local itemIcon = "⚔️"
+        local assetId = nil
+        local storeUrl = nil
+
+        if GM and GM.getImageId then
+            local ok, id = pcall(function() return GM:getImageId(name) end)
+            if ok and id and tostring(id) ~= "" and tostring(id) ~= "false" then
+                assetId = tostring(id)
+                -- URL รูปภาพความละเอียด 150x150 สำหรับหน้าเว็บ
+                itemIcon = "https://www.roblox.com/asset-thumbnail/image?assetId=" .. assetId .. "&width=150&height=150&format=png"
+                storeUrl = "https://create.roblox.com/store/asset/" .. assetId .. "/Texture"
+            end
+        end
+
         table.insert(items, {
             name = name,
             count = count,
-            rarity = rarity
+            rarity = rarity,
+            icon = itemIcon,
+            assetId = assetId,
+            storeUrl = storeUrl,
+            glow = rarity == "MYTHIC" and "red" or rarity == "LEGENDARY" and "amber" or "sky"
         })
     end
 
@@ -229,6 +257,11 @@ local function getPlayerData(blData)
     local embers = 0
     local race = "Human"
     local clan = "None"
+    local clanRole = ""
+    local bloodline = "None"
+    local village = ""
+    local rank = ""
+    local age = 0
 
     -- 1. [ลำดับแรก] ดึงจาก GUI ของ Bloodlines โดยตรง (ClientGui.Mainframe)
     pcall(function()
@@ -276,15 +309,33 @@ local function getPlayerData(blData)
         end
     end)
 
-    -- 2. ดึงจาก Bloodlines Data (กรณี GUI ยังไม่โหลดหรือเป็น 0)
+    -- 2. ดึงจาก Bloodlines Data (กรณี GUI ยังไม่โหลดหรือตรวจจับค่าเพิ่มเติม)
     blData = blData or getBloodlinesData()
     if blData then
+        -- ตรวจสอบข้อมูลแคลนและสายเลือด
         if blData.Clan and tostring(blData.Clan) ~= "" then
             clan = tostring(blData.Clan)
         end
-        if blData.Bloodline and tostring(blData.Bloodline) ~= "" then
-            race = tostring(blData.Bloodline)
+        if blData.ClanLeader and tostring(blData.ClanLeader) ~= "" then
+            clanRole = tostring(blData.ClanLeader)
         end
+        if blData.Bloodline and tostring(blData.Bloodline) ~= "" then
+            bloodline = tostring(blData.Bloodline)
+            race = bloodline
+        end
+
+        -- ข้อมูลตัวละครเพิ่มเติม
+        if blData.Village and tostring(blData.Village) ~= "" then
+            village = tostring(blData.Village)
+        end
+        if blData.Rank and tostring(blData.Rank) ~= "" then
+            rank = tostring(blData.Rank)
+        end
+        if blData.Age then
+            age = tonumber(blData.Age) or 0
+        end
+
+        -- ตัวเลข Ryo / Acumen / Embers
         if ryo == 0 and blData.Ryo then
             ryo = tonumber(blData.Ryo) or 0
             wen = ryo
@@ -358,8 +409,13 @@ local function getPlayerData(blData)
         ryo = ryo,
         acumen = acumen,
         embers = embers,
-        race = race,
-        clan = clan,
+        race = race,             -- ส่งสายเลือด เช่น Zetsu
+        bloodline = bloodline,   -- ส่งสายเลือดนินจา
+        clan = clan,             -- ส่งชื่อแคลน
+        clanRole = clanRole,     -- ตำแหน่งในแคลน
+        village = village,
+        rank = rank,
+        age = age,
         hp = hp,
         maxHp = maxHp
     }
@@ -384,13 +440,18 @@ local function sendLiveSync()
             placeId = Config.place_id,
             level = pData.level,
             race = pData.race,
-            clan = pData.clan,
+            bloodline = pData.bloodline, -- [รวมแล้ว] สายเลือดนินจา (เช่น Zetsu)
+            clan = pData.clan,           -- [รวมแล้ว] ชื่อแคลน
+            clanRole = pData.clanRole ~= "" and pData.clanRole or nil,
+            village = pData.village ~= "" and pData.village or nil,
+            rank = pData.rank ~= "" and pData.rank or nil,
+            age = pData.age > 0 and pData.age or nil,
             wen = pData.wen,
             ryo = pData.ryo,
             acumen = pData.acumen,
             embers = pData.embers,
             ember = pData.embers,
-            items = backpackItems,      -- รายการไอเทมพร้อม URL รูปภาพจริง
+            items = backpackItems,       -- รายการไอเทมพร้อม URL รูปภาพจริง
             stats = {
                 hp = pData.hp,
                 maxHp = pData.maxHp,
@@ -399,7 +460,9 @@ local function sendLiveSync()
                 ryo = pData.ryo,
                 acumen = pData.acumen,
                 embers = pData.embers,
-                ember = pData.embers
+                ember = pData.embers,
+                bloodline = pData.bloodline,
+                clan = pData.clan
             }
         },
         system = {
