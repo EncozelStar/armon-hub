@@ -62,14 +62,14 @@ if not detectedGame or detectedGame == "" then
 end
 
 local Config = {
-    api_url       = UserConfig.api_url or UserConfig.apiUrl or "https://maple-providers-scenic-homework.trycloudflare.com/api/sync",
+    api_url       = UserConfig.api_url or UserConfig.apiUrl or "https://armonhub.xyz/api/sync",
     api_key       = UserConfig.api_key or UserConfig.apiKey or "armon-hub-2026",
     pc_name       = UserConfig.PC_NAME or UserConfig.pc_name or UserConfig.pc or "PC-001",
     discord_id    = UserConfig.discord_id or UserConfig.discordId or "825282265609011211",
     game          = UserConfig.game or detectedGame,
     place_id      = currentPlaceId,
     game_id       = currentGameId,
-    sync_interval = tonumber(UserConfig.sync_interval) or 30
+    sync_interval = tonumber(UserConfig.sync_interval) or 15
 }
 
 local function getPing()
@@ -313,15 +313,18 @@ local function getPlayerData(blData)
     blData = blData or getBloodlinesData()
     if blData then
         -- ตรวจสอบข้อมูลแคลนและสายเลือด
-        if blData.Clan and tostring(blData.Clan) ~= "" then
+        if blData.Clan and tostring(blData.Clan) ~= "" and tostring(blData.Clan) ~= "None" then
             clan = tostring(blData.Clan)
         end
         if blData.ClanLeader and tostring(blData.ClanLeader) ~= "" then
             clanRole = tostring(blData.ClanLeader)
         end
-        if blData.Bloodline and tostring(blData.Bloodline) ~= "" then
+        if blData.Bloodline and tostring(blData.Bloodline) ~= "" and tostring(blData.Bloodline) ~= "None" then
             bloodline = tostring(blData.Bloodline)
             race = bloodline
+            if clan == "None" or clan == "" then
+                clan = bloodline
+            end
         end
 
         -- ข้อมูลตัวละครเพิ่มเติม
@@ -421,7 +424,29 @@ local function getPlayerData(blData)
     }
 end
 
-local function sendLiveSync()
+-- ==============================================================================
+-- ป้องกันการรันลูปซ้ำซ้อน (Clean duplicate background threads)
+-- ==============================================================================
+if getgenv()._ArmonSyncRunning then
+    getgenv()._ArmonSyncRunning = false
+    task.wait(0.1)
+end
+getgenv()._ArmonSyncRunning = true
+local threadSession = {}
+getgenv()._ArmonSession = threadSession
+
+local lastSyncTime = 0
+local isSendingSync = false
+
+local function sendLiveSync(force)
+    local now = os.time()
+    if isSendingSync then return end
+    if not force and (now - lastSyncTime < 14) then
+        return
+    end
+
+    isSendingSync = true
+    lastSyncTime = now
     local blData = getBloodlinesData()
     local pData = getPlayerData(blData)
     local backpackItems = scanBackpack(blData)
@@ -474,6 +499,7 @@ local function sendLiveSync()
 
     local requestFunc = (syn and syn.request) or (http and http.request) or http_request or request
     if not requestFunc then
+        isSendingSync = false
         return
     end
 
@@ -488,15 +514,19 @@ local function sendLiveSync()
             Body = HttpService:JSONEncode(payload)
         })
     end)
+    isSendingSync = false
 end
 
--- ส่งข้อมูลทันทีเมื่อเปิดสคริปต์
-sendLiveSync()
+-- ส่งข้อมูลทันที 1 ครั้งเมื่อเปิดสคริปต์
+sendLiveSync(true)
 
--- วนลูปส่ง Heartbeat ทุกๆ ช่วงเวลาที่กำหนด (sync_interval)
+-- วนลูปแจ้งข้อมูลทุกๆ 15 วินาที แทนการแจ้งตลอดเวลา ป้องกันปัญหาบัคและการค้าง
 task.spawn(function()
-    while true do
-        task.wait(Config.sync_interval or 30)
-        sendLiveSync()
+    while getgenv()._ArmonSyncRunning and getgenv()._ArmonSession == threadSession do
+        task.wait(Config.sync_interval or 15)
+        if not getgenv()._ArmonSyncRunning or getgenv()._ArmonSession ~= threadSession then
+            break
+        end
+        sendLiveSync(false)
     end
 end)
