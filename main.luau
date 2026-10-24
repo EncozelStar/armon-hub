@@ -199,16 +199,7 @@ local function scanBackpack(blData)
         end
     end
 
-    -- โหลดโมดูล GameManager สำหรับดึง Asset ID รูปภาพของเกม
-    local Rep = game:GetService("ReplicatedStorage")
-    local GM = nil
-    pcall(function()
-        if Rep:FindFirstChild("GameManager") then
-            GM = require(Rep.GameManager)
-        end
-    end)
-
-    -- แปลงเป็นโครงสร้างที่เว็บต้องการ
+    -- แปลงเป็นโครงสร้างส่งเข้าเว็บ (ระบบเว็บจะจับคู่รูปภาพแท้ในระบบให้อัตโนมัติจากชื่อไอเทม)
     for name, count in pairs(itemMap) do
         local rarity = "RARE"
         local lower = name:lower()
@@ -220,30 +211,10 @@ local function scanBackpack(blData)
             rarity = "UNCOMMON"
         end
 
-        -- [เพิ่มใหม่] ค้นหา Asset ID และ URL รูปภาพจริงของไอเทม
-        local itemIcon = "⚔️"
-        local assetId = nil
-        local storeUrl = nil
-
-        if GM and GM.getImageId then
-            local ok, id = pcall(function() return GM:getImageId(name) end)
-            if ok and id and tostring(id) ~= "" and tostring(id) ~= "false" then
-                assetId = tostring(id)
-                -- URL รูปภาพความละเอียด 150x150 สำหรับหน้าเว็บ
-                itemIcon = "https://www.roblox.com/asset-thumbnail/image?assetId=" .. assetId .. "&width=150&height=150&format=png"
-                storeUrl = "https://create.roblox.com/store/asset/" .. assetId .. "/Texture"
-            end
-        end
-
         table.insert(items, {
             name = name,
             count = count,
-            rarity = rarity,
-            icon = itemIcon,         -- URL รูปภาพจริง (หรือ ⚔️ หากไม่มีรูป)
-            imageUrl = (assetId and itemIcon) or nil, -- [เพิ่มใหม่] รองรับ imageUrl สำหรับเว็บ
-            assetId = assetId,       -- [เพิ่มใหม่] เลข Asset ID
-            storeUrl = storeUrl,     -- [เพิ่มใหม่] ลิงก์ Roblox Store
-            glow = rarity == "MYTHIC" and "red" or rarity == "LEGENDARY" and "amber" or "sky"
+            rarity = rarity
         })
     end
 
