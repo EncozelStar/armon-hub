@@ -62,14 +62,14 @@ if not detectedGame or detectedGame == "" then
 end
 
 local Config = {
-    api_url       = UserConfig.api_url or UserConfig.apiUrl or "https://armonhub.xyz/api/sync",
+    api_url       = UserConfig.api_url or UserConfig.apiUrl or "https://maple-providers-scenic-homework.trycloudflare.com/api/sync",
     api_key       = UserConfig.api_key or UserConfig.apiKey or "armon-hub-2026",
     pc_name       = UserConfig.PC_NAME or UserConfig.pc_name or UserConfig.pc or "PC-001",
     discord_id    = UserConfig.discord_id or UserConfig.discordId or "825282265609011211",
     game          = UserConfig.game or detectedGame,
     place_id      = currentPlaceId,
     game_id       = currentGameId,
-    sync_interval = tonumber(UserConfig.sync_interval) or 15
+    sync_interval = tonumber(UserConfig.sync_interval) or 30
 }
 
 local function getPing()
@@ -83,70 +83,214 @@ local function getPing()
     return ping
 end
 
--- ดึงข้อมูลสดจากระบบ Bloodlines โดยตรง (Environment / _G / RemoteFunction)
+-- ดึงข้อมูลสดจากระบบ Bloodlines โดยตรง (Environment / _G / Live Variables / RemoteFunction)
 local function getBloodlinesData()
+    local renvG = nil
     if getrenv and typeof(getrenv) == "function" then
-        local ok, renv = pcall(getrenv)
-        if ok and renv and renv._G and typeof(renv._G.Data) == "table" and renv._G.Data.Inventory then
-            return renv._G.Data
+        pcall(function() renvG = getrenv()._G end)
+    end
+
+    local d = (renvG and renvG.Data) or _G.Data
+    local mainData = (renvG and renvG.mainData) or _G.mainData
+    local vData = (renvG and renvG.v) or _G.v
+
+    if not d or typeof(d) ~= "table" then
+        local Rep = game:GetService("ReplicatedStorage")
+        local Events = Rep:FindFirstChild("Events")
+        if Events and Events:FindFirstChild("DataFunction") then
+            pcall(function()
+                local d1, d2 = Events.DataFunction:InvokeServer("GetData")
+                if typeof(d1) == "table" then d = d1 end
+                if typeof(d2) == "table" and not mainData then mainData = d2 end
+            end)
         end
     end
 
-    if typeof(_G.Data) == "table" and _G.Data.Inventory and _G.Data.Loadout then
-        return _G.Data
+    if not d or typeof(d) ~= "table" then
+        d = {}
     end
 
-    local Rep = game:GetService("ReplicatedStorage")
-    local Events = Rep:FindFirstChild("Events")
-    if Events and Events:FindFirstChild("DataFunction") then
-        local success, res = pcall(function()
-            return Events.DataFunction:InvokeServer("GetData")
-        end)
-        if success and typeof(res) == "table" and res.Inventory then
-            return res
-        end
-    end
+    pcall(function()
+        d._v = vData
+        d._mainData = mainData
+    end)
 
-    return nil
+    return d
 end
 
 local function scanBackpack(blData)
     local items = {}
     local itemMap = {}
+    local recordedSlots = {} -- [slotId] = { name = itemName, count = qty }
 
-    local function addTool(tool)
-        if tool and tool:IsA("Tool") then
-            local itemName = tool.Name
-            itemMap[itemName] = (itemMap[itemName] or 0) + 1
-        end
+    local renvG = nil
+    if getrenv and typeof(getrenv) == "function" then
+        pcall(function() renvG = getrenv()._G end)
     end
 
-    -- 1. ตรวจสอบข้อมูลไอเทมจาก Bloodlines โดยตรง (Hotbar 1-12 & กระเป๋า Inventory 1-154)
     blData = blData or getBloodlinesData()
-    if blData then
-        -- ตรวจสอบช่อง Hotbar / Loadout (1 - 12)
-        if blData.Loadout and typeof(blData.Loadout) == "table" then
-            for i = 1, 12 do
-                local slot = blData.Loadout[tostring(i)]
-                if slot and slot.Item and slot.Item ~= "" then
-                    local qty = tonumber(slot.Quantity) or 1
-                    itemMap[slot.Item] = (itemMap[slot.Item] or 0) + qty
-                end
+    local liveV = (blData and blData._v) or (renvG and renvG.v) or _G.v
+    local liveMainData = (blData and blData._mainData) or (renvG and renvG.mainData) or _G.mainData
+
+    local function recordSlot(slotId, name, count)
+        if not name or name == "" or typeof(name) ~= "string" then return end
+        name = name:match("^%s*(.-)%s*$") -- Trim whitespace
+        if name == "" or name == "None" or name == "Empty" then return end
+        count = math.max(1, tonumber(count) or 1)
+
+        if not recordedSlots[slotId] then
+            recordedSlots[slotId] = { name = name, count = count }
+        else
+            recordedSlots[slotId].count = math.max(recordedSlots[slotId].count, count)
+            if recordedSlots[slotId].name == "" then
+                recordedSlots[slotId].name = name
             end
         end
+    end
 
-        -- ตรวจสอบช่อง Inventory (1 - 154)
-        if blData.Inventory and typeof(blData.Inventory) == "table" then
-            for _, slot in pairs(blData.Inventory) do
-                if slot and slot.Item and slot.Item ~= "" then
-                    local qty = tonumber(slot.Quantity) or 1
-                    itemMap[slot.Item] = (itemMap[slot.Item] or 0) + qty
+    local function scanSlotTable(tbl, prefix)
+        if typeof(tbl) ~= "table" then return end
+        for k, slot in pairs(tbl) do
+            local slotKey = tostring(k)
+            if typeof(slot) == "table" then
+                local itemName = slot.Item or slot.name or slot.Name or slot.item
+                if itemName and typeof(itemName) == "string" and itemName ~= "" then
+                    local qty = tonumber(slot.Quantity or slot.count or slot.Count or slot.qty or slot.amount) or 1
+                    recordSlot(prefix .. slotKey, itemName, qty)
+                end
+            elseif typeof(slot) == "string" and slot ~= "" then
+                recordSlot(prefix .. slotKey, slot, 1)
+            elseif typeof(k) == "string" and not tonumber(k) and (typeof(slot) == "number" or typeof(slot) == "boolean") then
+                local qty = typeof(slot) == "number" and slot or 1
+                if qty > 0 then
+                    recordSlot(prefix .. slotKey, k, qty)
                 end
             end
         end
     end
 
-    -- 2. ตรวจสอบของในกระเป๋ามาตรฐาน (Backpack)
+    -- 1. แหล่งที่ 1: สแกนจาก Memory Tables (_G.v, _G.mainData, _G.Data)
+    -- 1.1 Hotbar / Loadout (1 - 12)
+    if liveV and typeof(liveV.Loadout) == "table" then
+        scanSlotTable(liveV.Loadout, "Loadout_")
+    end
+    if blData and typeof(blData.Loadout) == "table" then
+        scanSlotTable(blData.Loadout, "Loadout_")
+    end
+
+    -- 1.2 กระเป๋า Inventory (1 - 154)
+    if liveV and typeof(liveV.Inventory) == "table" then
+        scanSlotTable(liveV.Inventory, "Inv_")
+    end
+    if blData and typeof(blData.Inventory) == "table" then
+        scanSlotTable(blData.Inventory, "Inv_")
+    end
+
+    -- 1.3 ตู้เซฟธนาคาร (Bank Storage)
+    if liveMainData and typeof(liveMainData.Bank) == "table" and typeof(liveMainData.Bank.Slots) == "table" then
+        scanSlotTable(liveMainData.Bank.Slots, "Bank_")
+    end
+
+    -- 1.4 หมวด Souls / Scrolls / Equipment ใน Memory (ถ้ามี)
+    if liveV and typeof(liveV.Souls) == "table" then scanSlotTable(liveV.Souls, "Soul_") end
+    if blData and typeof(blData.Souls) == "table" then scanSlotTable(blData.Souls, "Soul_") end
+    if liveV and typeof(liveV.Scrolls) == "table" then scanSlotTable(liveV.Scrolls, "Scroll_") end
+    if blData and typeof(blData.Scrolls) == "table" then scanSlotTable(blData.Scrolls, "Scroll_") end
+    if liveV and typeof(liveV.Equipment) == "table" then scanSlotTable(liveV.Equipment, "Equip_") end
+    if blData and typeof(blData.Equipment) == "table" then scanSlotTable(blData.Equipment, "Equip_") end
+
+    -- 2. แหล่งที่ 2: สแกนจากหน้าจอ UI (ClientGui) โดยตรง (ตรวจจับไอเทมสดที่แสดงผล)
+    pcall(function()
+        local playerGui = player:FindFirstChild("PlayerGui")
+        local clientGui = playerGui and playerGui:FindFirstChild("ClientGui")
+        local mainframe = clientGui and clientGui:FindFirstChild("Mainframe")
+        local loadoutGui = mainframe and mainframe:FindFirstChild("Loadout")
+
+        if loadoutGui then
+            -- 2.1 สแกน Hotbar ช่อง Slot1 - Slot12
+            for i = 1, 12 do
+                local slotFrame = loadoutGui:FindFirstChild("Slot" .. i)
+                if slotFrame then
+                    local slotText = slotFrame:FindFirstChild("SlotText")
+                    local text = slotText and slotText.Text or ""
+                    if text ~= "" then
+                        local qty = 1
+                        local itemNum = slotFrame:FindFirstChild("ItemNumber")
+                        local numLabel = itemNum and (itemNum:FindFirstChild("Number") or (itemNum:IsA("TextLabel") and itemNum))
+                        if numLabel and numLabel.Text and numLabel.Text ~= "" then
+                            local parsed = numLabel.Text:gsub("%D+", "")
+                            qty = tonumber(parsed) or 1
+                        end
+                        recordSlot("Loadout_" .. tostring(i), text, qty)
+                    end
+                end
+            end
+
+            -- 2.2 สแกนกระเป๋าเป้ (InventoryScroll Frame: InvSlot1 - InvSlot154)
+            local invGui = loadoutGui:FindFirstChild("Inventory")
+            local invScroll = invGui and invGui:FindFirstChild("InventoryScroll")
+            local invFrame = invScroll and invScroll:FindFirstChild("Frame")
+            if invFrame then
+                for _, child in ipairs(invFrame:GetChildren()) do
+                    if child.Name:match("^InvSlot") then
+                        local slotIdx = child.Name:match("%d+") or child.Name
+                        local slotText = child:FindFirstChild("SlotText")
+                        local text = slotText and slotText.Text or ""
+                        if text ~= "" then
+                            local qty = 1
+                            local itemNum = child:FindFirstChild("ItemNumber")
+                            local numLabel = itemNum and (itemNum:FindFirstChild("Number") or (itemNum:IsA("TextLabel") and itemNum))
+                            if numLabel and numLabel.Text and numLabel.Text ~= "" then
+                                local parsed = numLabel.Text:gsub("%D+", "")
+                                qty = tonumber(parsed) or 1
+                            end
+                            recordSlot("Inv_" .. tostring(slotIdx), text, qty)
+                        end
+                    end
+                end
+            end
+
+            -- 2.3 สแกนคลังธนาคาร (BankScroll Slots)
+            local bankGui = loadoutGui:FindFirstChild("Bank")
+            local bankScroll = bankGui and bankGui:FindFirstChild("BankScroll")
+            if bankScroll then
+                for _, child in ipairs(bankScroll:GetChildren()) do
+                    if child.Name:match("Slot") then
+                        local slotAttr = child:GetAttribute("SlotNumber")
+                        local slotIdx = slotAttr and tostring(slotAttr) or (child.Name:match("%d+") or child.Name)
+                        local slotText = child:FindFirstChild("SlotText")
+                        local text = slotText and slotText.Text or ""
+                        if text ~= "" then
+                            local qty = 1
+                            local itemNum = child:FindFirstChild("ItemNumber")
+                            local numLabel = itemNum and (itemNum:FindFirstChild("Number") or (itemNum:IsA("TextLabel") and itemNum))
+                            if numLabel and numLabel.Text and numLabel.Text ~= "" then
+                                local parsed = numLabel.Text:gsub("%D+", "")
+                                qty = tonumber(parsed) or 1
+                            end
+                            recordSlot("Bank_" .. tostring(slotIdx), text, qty)
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
+    -- รวมจำนวนไอเทมของทุกช่องที่บันทึกได้
+    for _, slotData in pairs(recordedSlots) do
+        itemMap[slotData.name] = (itemMap[slotData.name] or 0) + slotData.count
+    end
+
+    -- 3. ตรวจสอบของในกระเป๋ามาตรฐาน (Backpack) และบนตัวละคร (Character - ทั้ง Tool และ Accessory สวมใส่ เช่น Ice Wraps)
+    local function addTool(tool)
+        if tool and (tool:IsA("Tool") or tool:IsA("Accessory")) then
+            local itemName = tool.Name:match("^%s*(.-)%s*$")
+            if itemName ~= "" and itemName ~= "HumanoidRootPart" and itemName ~= "Head" then
+                itemMap[itemName] = (itemMap[itemName] or 0) + 1
+            end
+        end
+    end
+
     local backpack = player:FindFirstChild("Backpack")
     if backpack then
         for _, tool in ipairs(backpack:GetChildren()) do
@@ -154,7 +298,6 @@ local function scanBackpack(blData)
         end
     end
 
-    -- 3. ตรวจสอบของที่ถืออยู่ในมือ (Character)
     local char = player.Character
     if char then
         for _, tool in ipairs(char:GetChildren()) do
@@ -162,28 +305,36 @@ local function scanBackpack(blData)
         end
     end
 
-    -- 4. ตรวจสอบโฟลเดอร์เก็บของในเกม (Inventory, Items, BackpackFolder, Data)
+    -- 4. ตรวจสอบโฟลเดอร์เก็บของในเกม (Inventory, Items, BackpackFolder, Data, Souls, Scrolls)
     local possibleFolders = {
         player:FindFirstChild("Inventory"),
         player:FindFirstChild("Items"),
         player:FindFirstChild("BackpackFolder"),
         player:FindFirstChild("Tools"),
+        player:FindFirstChild("Equipment"),
+        player:FindFirstChild("Equipped"),
+        player:FindFirstChild("Souls"),
+        player:FindFirstChild("Scrolls"),
         player:FindFirstChild("Data") and player.Data:FindFirstChild("Inventory"),
-        player:FindFirstChild("Data") and player.Data:FindFirstChild("Items")
+        player:FindFirstChild("Data") and player.Data:FindFirstChild("Items"),
+        player:FindFirstChild("Data") and player.Data:FindFirstChild("Souls"),
+        player:FindFirstChild("Data") and player.Data:FindFirstChild("Scrolls")
     }
 
     for _, folder in ipairs(possibleFolders) do
         if folder then
             for _, item in ipairs(folder:GetChildren()) do
-                local itemName = item.Name
-                local count = 1
-                if item:IsA("NumberValue") or item:IsA("IntValue") then
-                    count = math.max(1, tonumber(item.Value) or 1)
-                elseif item:FindFirstChild("Amount") or item:FindFirstChild("Count") or item:FindFirstChild("Quantity") then
-                    local val = item:FindFirstChild("Amount") or item:FindFirstChild("Count") or item:FindFirstChild("Quantity")
-                    count = math.max(1, tonumber(val.Value) or 1)
+                local itemName = item.Name:match("^%s*(.-)%s*$")
+                if itemName ~= "" and not itemMap[itemName] then
+                    local count = 1
+                    if item:IsA("NumberValue") or item:IsA("IntValue") then
+                        count = math.max(1, tonumber(item.Value) or 1)
+                    elseif item:FindFirstChild("Amount") or item:FindFirstChild("Count") or item:FindFirstChild("Quantity") then
+                        local val = item:FindFirstChild("Amount") or item:FindFirstChild("Count") or item:FindFirstChild("Quantity")
+                        count = math.max(1, tonumber(val.Value) or 1)
+                    end
+                    itemMap[itemName] = (itemMap[itemName] or 0) + count
                 end
-                itemMap[itemName] = (itemMap[itemName] or 0) + count
             end
         end
     end
@@ -192,9 +343,11 @@ local function scanBackpack(blData)
     if UserConfig.custom_items and type(UserConfig.custom_items) == "table" then
         for _, cItem in ipairs(UserConfig.custom_items) do
             if type(cItem) == "table" and cItem.name then
-                itemMap[cItem.name] = (itemMap[cItem.name] or 0) + (tonumber(cItem.count) or 1)
+                local cName = tostring(cItem.name):match("^%s*(.-)%s*$")
+                itemMap[cName] = (itemMap[cName] or 0) + (tonumber(cItem.count) or 1)
             elseif type(cItem) == "string" then
-                itemMap[cItem] = (itemMap[cItem] or 0) + 1
+                local cName = cItem:match("^%s*(.-)%s*$")
+                itemMap[cName] = (itemMap[cName] or 0) + 1
             end
         end
     end
@@ -212,11 +365,13 @@ local function scanBackpack(blData)
     for name, count in pairs(itemMap) do
         local rarity = "RARE"
         local lower = name:lower()
-        if lower:find("mythic") or lower:find("sun") or lower:find("crimson") or lower:find("haori") then
+        if lower:find("candy") or lower:find("pumpkin") or lower:find("firework") or lower:find("snow") or lower:find("wings") or lower:find("halo") then
+            rarity = "EVENT"
+        elseif lower:find("mythic") or lower:find("affinity") or lower:find("token") then
             rarity = "MYTHIC"
-        elseif lower:find("legendary") or lower:find("tome") or lower:find("mark") or lower:find("remedy") then
+        elseif lower:find("legendary") or lower:find("fruit") or lower:find("soul") or lower:find("schematics") or lower:find("eyes") then
             rarity = "LEGENDARY"
-        elseif lower:find("uncommon") or lower:find("ticket") then
+        elseif lower:find("uncommon") or lower:find("bowl") or lower:find("mask") or lower:find("soup") then
             rarity = "UNCOMMON"
         end
 
@@ -225,11 +380,23 @@ local function scanBackpack(blData)
         local assetId = nil
         local storeUrl = nil
 
-        if GM and GM.getImageId then
+        if GM then
             local ok, id = pcall(function() return GM:getImageId(name) end)
-            if ok and id and tostring(id) ~= "" and tostring(id) ~= "false" then
+            if (not ok or not id or tostring(id) == "" or tostring(id) == "false") and GM.Items then
+                -- ค้นหาแบบ Case-Insensitive เผื่อกรณีชื่อเขียนตัวพิมพ์เล็ก/ใหญ่ต่างกัน
+                pcall(function()
+                    local lowerName = name:lower()
+                    for k, v in pairs(GM.Items) do
+                        if tostring(k):lower() == lowerName and typeof(v) == "table" and v.ID and tostring(v.ID) ~= "" then
+                            id = v.ID
+                            break
+                        end
+                    end
+                end)
+            end
+
+            if id and tostring(id) ~= "" and tostring(id) ~= "false" then
                 assetId = tostring(id)
-                -- URL รูปภาพความละเอียด 150x150 สำหรับหน้าเว็บ
                 itemIcon = "https://www.roblox.com/asset-thumbnail/image?assetId=" .. assetId .. "&width=150&height=150&format=png"
                 storeUrl = "https://create.roblox.com/store/asset/" .. assetId .. "/Texture"
             end
@@ -242,7 +409,7 @@ local function scanBackpack(blData)
             icon = itemIcon,
             assetId = assetId,
             storeUrl = storeUrl,
-            glow = rarity == "MYTHIC" and "red" or rarity == "LEGENDARY" and "amber" or "sky"
+            glow = rarity == "EVENT" and "fuchsia" or rarity == "MYTHIC" and "red" or rarity == "LEGENDARY" and "amber" or "sky"
         })
     end
 
@@ -250,135 +417,73 @@ local function scanBackpack(blData)
 end
 
 local function getPlayerData(blData)
+    blData = blData or getBloodlinesData()
     local level = 1
     local wen = 0
     local ryo = 0
     local acumen = 0
     local embers = 0
     local race = "Human"
+    local bloodline = "None"
     local clan = "None"
     local clanRole = ""
-    local bloodline = "None"
     local village = ""
     local rank = ""
     local age = 0
 
-    -- 1. [ลำดับแรก] ดึงจาก GUI ของ Bloodlines โดยตรง (ClientGui.Mainframe)
+    if blData then
+        ryo = tonumber(blData.Ryo) or 0
+        wen = ryo
+        acumen = tonumber(blData.Acumen) or 0
+        level = acumen > 0 and acumen or 1
+        embers = tonumber(blData.Embers) or 0
+        bloodline = tostring(blData.Bloodline or "None")
+        clan = tostring(blData.Clan or "None")
+        village = tostring(blData.Village or "")
+        rank = tostring(blData.Rank or "")
+        age = tonumber(blData.Age) or 0
+    end
+
+    -- ดึงค่าเงิน สกุลเงิน แคลน และสายเลือดสำรองจาก GUI
     pcall(function()
-        local clientGui = player:FindFirstChild("PlayerGui") and player.PlayerGui:FindFirstChild("ClientGui")
-        if clientGui and clientGui:FindFirstChild("Mainframe") then
-            local mf = clientGui.Mainframe
+        local playerGui = player:FindFirstChild("PlayerGui")
+        local clientGui = playerGui and playerGui:FindFirstChild("ClientGui")
+        local mainframe = clientGui and clientGui:FindFirstChild("Mainframe")
 
-            -- Ryo จาก ClientGui.Mainframe.Ryo.Amount.Text
-            if mf:FindFirstChild("Ryo") and mf.Ryo:FindFirstChild("Amount") then
-                local obj = mf.Ryo.Amount
-                local raw = (obj:IsA("TextLabel") or obj:IsA("TextBox")) and obj.Text or (obj.Value and tostring(obj.Value))
-                if raw then
-                    local clean = tostring(raw):gsub("[^%d]", "")
-                    if clean ~= "" then
-                        ryo = tonumber(clean) or ryo
-                        wen = ryo
-                    end
-                end
+        if mainframe then
+            if ryo == 0 and mainframe:FindFirstChild("Ryo") and mainframe.Ryo:FindFirstChild("Amount") then
+                local rText = mainframe.Ryo.Amount.Text:gsub("%D+", "")
+                ryo = tonumber(rText) or ryo
+                wen = ryo
+            end
+            if acumen == 0 and mainframe:FindFirstChild("Acumen") and mainframe.Acumen:FindFirstChild("Amount") then
+                local aText = mainframe.Acumen.Amount.Text:gsub("%D+", "")
+                acumen = tonumber(aText) or acumen
+                level = acumen > 0 and acumen or level
+            end
+            if embers == 0 and mainframe:FindFirstChild("Embers") and mainframe.Embers:FindFirstChild("Amount") then
+                local eText = mainframe.Embers.Amount.Text:gsub("%D+", "")
+                embers = tonumber(eText) or embers
             end
 
-            -- Acumen จาก ClientGui.Mainframe.Acumen.Amount.Text
-            if mf:FindFirstChild("Acumen") and mf.Acumen:FindFirstChild("Amount") then
-                local obj = mf.Acumen.Amount
-                local raw = (obj:IsA("TextLabel") or obj:IsA("TextBox")) and obj.Text or (obj.Value and tostring(obj.Value))
-                if raw then
-                    local clean = tostring(raw):gsub("[^%d]", "")
-                    if clean ~= "" then
-                        acumen = tonumber(clean) or acumen
-                        level = acumen
-                    end
-                end
-            end
-
-            -- Embers จาก ClientGui.Mainframe.Embers.Amount.Text
-            if mf:FindFirstChild("Embers") and mf.Embers:FindFirstChild("Amount") then
-                local obj = mf.Embers.Amount
-                local raw = (obj:IsA("TextLabel") or obj:IsA("TextBox")) and obj.Text or (obj.Value and tostring(obj.Value))
-                if raw then
-                    local clean = tostring(raw):gsub("[^%d]", "")
-                    if clean ~= "" then
-                        embers = tonumber(clean) or embers
-                    end
+            -- ตรวจสอบแคลนจาก SlotClans GUI
+            if (clan == "None" or clan == "") and mainframe:FindFirstChild("SlotClans") then
+                local slot1 = mainframe.SlotClans:FindFirstChild("Clan1")
+                if slot1 and slot1:FindFirstChild("ClanName") and slot1.ClanName.Text ~= "" and slot1.ClanName.Text ~= "No Clan" then
+                    clan = slot1.ClanName.Text
                 end
             end
         end
     end)
 
-    -- 2. ดึงจาก Bloodlines Data (กรณี GUI ยังไม่โหลดหรือตรวจจับค่าเพิ่มเติม)
-    blData = blData or getBloodlinesData()
-    if blData then
-        -- ตรวจสอบข้อมูลแคลนและสายเลือด
-        if blData.Clan and tostring(blData.Clan) ~= "" and tostring(blData.Clan) ~= "None" then
-            clan = tostring(blData.Clan)
-        end
-        if blData.ClanLeader and tostring(blData.ClanLeader) ~= "" then
-            clanRole = tostring(blData.ClanLeader)
-        end
-        if blData.Bloodline and tostring(blData.Bloodline) ~= "" and tostring(blData.Bloodline) ~= "None" then
-            bloodline = tostring(blData.Bloodline)
-            race = bloodline
-            if clan == "None" or clan == "" then
-                clan = bloodline
-            end
-        end
-
-        -- ข้อมูลตัวละครเพิ่มเติม
-        if blData.Village and tostring(blData.Village) ~= "" then
-            village = tostring(blData.Village)
-        end
-        if blData.Rank and tostring(blData.Rank) ~= "" then
-            rank = tostring(blData.Rank)
-        end
-        if blData.Age then
-            age = tonumber(blData.Age) or 0
-        end
-
-        -- ตัวเลข Ryo / Acumen / Embers
-        if ryo == 0 and blData.Ryo then
-            ryo = tonumber(blData.Ryo) or 0
-            wen = ryo
-        end
-        if acumen == 0 and blData.Acumen then
-            acumen = tonumber(blData.Acumen) or 0
-            level = acumen
-        end
-        if embers == 0 and blData.Embers then
-            embers = tonumber(blData.Embers) or 0
-        end
+    if (clan == "None" or clan == "") and (bloodline ~= "None" and bloodline ~= "") then
+        race = bloodline
+    elseif clan ~= "None" and clan ~= "" then
+        race = clan
     end
 
-    -- 3. ตรวจสอบ leaderstats เผื่อเกมอื่นๆ
-    local leaderstats = player:FindFirstChild("leaderstats")
-    if leaderstats then
-        for _, stat in ipairs(leaderstats:GetChildren()) do
-            local sName = stat.Name:lower()
-            if sName:find("ember") and embers == 0 then
-                embers = tonumber(stat.Value) or embers
-            elseif sName:find("acumen") and acumen == 0 then
-                acumen = tonumber(stat.Value) or acumen
-                level = acumen
-            elseif sName:find("level") or sName:find("lvl") then
-                if level == 1 then level = tonumber(stat.Value) or level end
-            elseif sName:find("ryo") and ryo == 0 then
-                ryo = tonumber(stat.Value) or ryo
-                wen = ryo
-            elseif sName:find("wen") or sName:find("cash") or sName:find("beli") or sName:find("gold") or sName:find("yen") then
-                if wen == 0 then wen = tonumber(stat.Value) or wen end
-            elseif sName:find("clan") and clan == "None" then
-                clan = tostring(stat.Value)
-            elseif sName:find("race") and race == "Human" then
-                race = tostring(stat.Value)
-            end
-        end
-    end
-
-    -- 4. ตรวจสอบ Stats หรือ Data Folder อื่นๆ
-    local statsFolder = player:FindFirstChild("Stats") or player:FindFirstChild("Data")
+    -- ดึงจากโฟลเดอร์ Stats / leaderstats
+    local statsFolder = player:FindFirstChild("leaderstats") or player:FindFirstChild("Stats") or player:FindFirstChild("Data")
     if statsFolder then
         for _, stat in ipairs(statsFolder:GetChildren()) do
             local sName = stat.Name:lower()
@@ -424,29 +529,7 @@ local function getPlayerData(blData)
     }
 end
 
--- ==============================================================================
--- ป้องกันการรันลูปซ้ำซ้อน (Clean duplicate background threads)
--- ==============================================================================
-if getgenv()._ArmonSyncRunning then
-    getgenv()._ArmonSyncRunning = false
-    task.wait(0.1)
-end
-getgenv()._ArmonSyncRunning = true
-local threadSession = {}
-getgenv()._ArmonSession = threadSession
-
-local lastSyncTime = 0
-local isSendingSync = false
-
-local function sendLiveSync(force)
-    local now = os.time()
-    if isSendingSync then return end
-    if not force and (now - lastSyncTime < 14) then
-        return
-    end
-
-    isSendingSync = true
-    lastSyncTime = now
+local function sendLiveSync()
     local blData = getBloodlinesData()
     local pData = getPlayerData(blData)
     local backpackItems = scanBackpack(blData)
@@ -476,7 +559,7 @@ local function sendLiveSync(force)
             acumen = pData.acumen,
             embers = pData.embers,
             ember = pData.embers,
-            items = backpackItems,       -- รายการไอเทมพร้อม URL รูปภาพจริง
+            items = backpackItems,       -- รายการไอเทมทั้งหมดรวม Souls, Scrolls, Wraps
             stats = {
                 hp = pData.hp,
                 maxHp = pData.maxHp,
@@ -499,7 +582,6 @@ local function sendLiveSync(force)
 
     local requestFunc = (syn and syn.request) or (http and http.request) or http_request or request
     if not requestFunc then
-        isSendingSync = false
         return
     end
 
@@ -514,19 +596,15 @@ local function sendLiveSync(force)
             Body = HttpService:JSONEncode(payload)
         })
     end)
-    isSendingSync = false
 end
 
--- ส่งข้อมูลทันที 1 ครั้งเมื่อเปิดสคริปต์
-sendLiveSync(true)
+-- ส่งข้อมูลทันทีเมื่อเปิดสคริปต์
+sendLiveSync()
 
--- วนลูปแจ้งข้อมูลทุกๆ 15 วินาที แทนการแจ้งตลอดเวลา ป้องกันปัญหาบัคและการค้าง
+-- วนลูปส่ง Heartbeat ทุกๆ ช่วงเวลาที่กำหนด (sync_interval)
 task.spawn(function()
-    while getgenv()._ArmonSyncRunning and getgenv()._ArmonSession == threadSession do
-        task.wait(Config.sync_interval or 15)
-        if not getgenv()._ArmonSyncRunning or getgenv()._ArmonSession ~= threadSession then
-            break
-        end
-        sendLiveSync(false)
+    while true do
+        task.wait(Config.sync_interval or 30)
+        sendLiveSync()
     end
 end)
