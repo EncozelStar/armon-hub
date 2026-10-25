@@ -442,6 +442,20 @@ local function getPlayerData(blData)
         village = tostring(blData.Village or "")
         rank = tostring(blData.Rank or "")
         age = tonumber(blData.Age) or 0
+
+        -- ตรวจสอบแคลนเพิ่มเติมจาก mainData และ _v ใน Memory
+        if (clan == "None" or clan == "") and blData._mainData and typeof(blData._mainData) == "table" then
+            clan = tostring(blData._mainData.Clan or blData._mainData.ClanName or blData._mainData.Clans or clan)
+            if bloodline == "None" or bloodline == "" then
+                bloodline = tostring(blData._mainData.Bloodline or bloodline)
+            end
+        end
+        if (clan == "None" or clan == "") and blData._v and typeof(blData._v) == "table" then
+            clan = tostring(blData._v.Clan or blData._v.ClanName or clan)
+            if bloodline == "None" or bloodline == "" then
+                bloodline = tostring(blData._v.Bloodline or bloodline)
+            end
+        end
     end
 
     -- ดึงค่าเงิน สกุลเงิน แคลน และสายเลือดสำรองจาก GUI
@@ -466,15 +480,55 @@ local function getPlayerData(blData)
                 embers = tonumber(eText) or embers
             end
 
-            -- ตรวจสอบแคลนจาก SlotClans GUI
+            -- ตรวจสอบแคลนจาก SlotClans GUI (ช่อง Clan1, Clan2, Clan3)
             if (clan == "None" or clan == "") and mainframe:FindFirstChild("SlotClans") then
-                local slot1 = mainframe.SlotClans:FindFirstChild("Clan1")
-                if slot1 and slot1:FindFirstChild("ClanName") and slot1.ClanName.Text ~= "" and slot1.ClanName.Text ~= "No Clan" then
-                    clan = slot1.ClanName.Text
+                for _, slotName in ipairs({"Clan1", "Clan2", "Clan3"}) do
+                    local slot = mainframe.SlotClans:FindFirstChild(slotName)
+                    if slot and slot:FindFirstChild("ClanName") and slot.ClanName.Text ~= "" and slot.ClanName.Text ~= "No Clan" and slot.ClanName.Text ~= "None" then
+                        clan = slot.ClanName.Text
+                        break
+                    end
                 end
             end
         end
     end)
+
+    -- ตรวจสอบจาก Attributes ของ Player และ Character
+    pcall(function()
+        if (clan == "None" or clan == "") then
+            local pClan = player:GetAttribute("Clan") or player:GetAttribute("ClanName")
+            if pClan and tostring(pClan) ~= "" and tostring(pClan) ~= "None" then
+                clan = tostring(pClan)
+            end
+        end
+        if (bloodline == "None" or bloodline == "") then
+            local pBl = player:GetAttribute("Bloodline") or player:GetAttribute("Lineage")
+            if pBl and tostring(pBl) ~= "" and tostring(pBl) ~= "None" then
+                bloodline = tostring(pBl)
+            end
+        end
+        if player.Character then
+            if (clan == "None" or clan == "") then
+                local cClan = player.Character:GetAttribute("Clan")
+                if cClan and tostring(cClan) ~= "" and tostring(cClan) ~= "None" then
+                    clan = tostring(cClan)
+                end
+            end
+        end
+    end)
+
+    -- แคช Clan และ Bloodline ไว้ในตัวแปร Global ป้องกันการสูญหายเมื่อ respawn หรือสลับแมพ
+    if clan and clan ~= "None" and clan ~= "" and clan ~= "No Clan" and clan ~= "-" then
+        _G.ArmonCachedClan = clan
+    elseif _G.ArmonCachedClan and _G.ArmonCachedClan ~= "" and _G.ArmonCachedClan ~= "None" then
+        clan = _G.ArmonCachedClan
+    end
+
+    if bloodline and bloodline ~= "None" and bloodline ~= "" and bloodline ~= "-" then
+        _G.ArmonCachedBloodline = bloodline
+    elseif _G.ArmonCachedBloodline and _G.ArmonCachedBloodline ~= "" and _G.ArmonCachedBloodline ~= "None" then
+        bloodline = _G.ArmonCachedBloodline
+    end
 
     if (clan == "None" or clan == "") and (bloodline ~= "None" and bloodline ~= "") then
         race = bloodline
@@ -534,6 +588,15 @@ local function sendLiveSync()
     local pData = getPlayerData(blData)
     local backpackItems = scanBackpack(blData)
 
+    -- คำนวณเวลาออนไลน์ต่อเนื่องของตัวเกม (DistributedGameTime / os.clock)
+    local sessionUptime = 0
+    pcall(function()
+        sessionUptime = math.floor(workspace.DistributedGameTime or 0)
+        if sessionUptime <= 0 then
+            sessionUptime = math.floor(os.clock() or 0)
+        end
+    end)
+
     local payload = {
         apiKey = Config.api_key,
         game = Config.game,
@@ -541,11 +604,13 @@ local function sendLiveSync()
         gameId = Config.game_id,
         pc = Config.pc_name,
         discordId = Config.discord_id,
+        uptime = sessionUptime,
         account = {
             username = player.Name,
             displayName = player.DisplayName,
             userId = player.UserId,
             placeId = Config.place_id,
+            uptime = sessionUptime,       -- ส่งระยะเวลาที่ออนไลน์จริงในเซสชันนี้
             level = pData.level,
             race = pData.race,
             bloodline = pData.bloodline, -- [รวมแล้ว] สายเลือดนินจา (เช่น Zetsu)
@@ -598,7 +663,56 @@ local function sendLiveSync()
     end)
 end
 
--- ส่งข้อมูลทันทีเมื่อเปิดสคริปต์
+-- ฟังก์ชันแจ้งเตือนออฟไลน์ทันทีเมื่อผู้เล่นปิดเกม หรือออกจากเซิร์ฟเวอร์
+local function sendOfflineNotice()
+    pcall(function()
+        local payload = {
+            apiKey = Config.api_key,
+            game = Config.game,
+            placeId = Config.place_id,
+            pc = Config.pc_name,
+            discordId = Config.discord_id,
+            isOffline = true,
+            account = {
+                username = player.Name,
+                userId = player.UserId,
+                statusType = "offline"
+            }
+        }
+        local req = (syn and syn.request) or (http and http.request) or http_request or request
+        if req then
+            req({
+                Url = Config.api_url,
+                Method = "POST",
+                Headers = {
+                    ["Content-Type"] = "application/json",
+                    ["bypass-tunnel-reminder"] = "true"
+                },
+                Body = HttpService:JSONEncode(payload)
+            })
+        end
+    end)
+end
+
+-- ดักจับเหตุการณ์ตอนปิดเกม (Graceful Disconnect)
+pcall(function()
+    game:BindToClose(function()
+        sendOfflineNotice()
+    end)
+end)
+
+pcall(function()
+    Players.PlayerRemoving:Connect(function(leavingPlayer)
+        if leavingPlayer == player then
+            sendOfflineNotice()
+        end
+    end)
+end)
+
+-- รอให้ข้อมูลในเกมและ GUI โหลดให้สมบูรณ์ก่อนส่งรอบแรก
+task.wait(2.5)
+
+-- ส่งข้อมูลทันทีเมื่อโหลดเสร็จ
 sendLiveSync()
 
 -- วนลูปส่ง Heartbeat ทุกๆ ช่วงเวลาที่กำหนด (sync_interval)
