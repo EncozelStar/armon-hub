@@ -21,7 +21,6 @@ local currentGameId = game.GameId
 local PLACE_ID_MAPPING = {
     -- Bloodlines
     [10266164381] = "[⌛] Bloodlines",
-    [5571328985]  = "[⌛] Bloodlines",
 
     -- Project Slayers
     [5956785391]  = "Project Slayers",
