@@ -21,6 +21,7 @@ local currentGameId = game.GameId
 local PLACE_ID_MAPPING = {
     -- Bloodlines
     [10266164381] = "[⌛] Bloodlines",
+    [5571328985]  = "[⌛] Bloodlines",
 
     -- Project Slayers
     [5956785391]  = "Project Slayers",
@@ -412,6 +413,13 @@ local function scanBackpack(blData)
         })
     end
 
+    -- แคชรายการไอเทมในตัวแปร Global ป้องกันการสูญหายเมื่อตัวละครตายเกิด สลับแมพ หรือปิดเกม
+    if #items > 0 then
+        _G.ArmonCachedItems = items
+    elseif _G.ArmonCachedItems and #_G.ArmonCachedItems > 0 then
+        items = _G.ArmonCachedItems
+    end
+
     return items
 end
 
@@ -564,6 +572,14 @@ local function getPlayerData(blData)
     local hp = humanoid and math.floor(humanoid.Health) or 100
     local maxHp = humanoid and math.floor(humanoid.MaxHealth) or 100
 
+    -- แคชค่าเงิน และสถิติต่างๆ ในตัวแปร Global ป้องกันการส่งค่า 0 เมื่อสลับแมพหรือตอนปิดเกม
+    if not _G.ArmonCachedStats then _G.ArmonCachedStats = {} end
+    if ryo > 0 then _G.ArmonCachedStats.ryo = ryo elseif _G.ArmonCachedStats.ryo then ryo = _G.ArmonCachedStats.ryo end
+    if acumen > 0 then _G.ArmonCachedStats.acumen = acumen elseif _G.ArmonCachedStats.acumen then acumen = _G.ArmonCachedStats.acumen end
+    if level > 1 then _G.ArmonCachedStats.level = level elseif _G.ArmonCachedStats.level then level = _G.ArmonCachedStats.level end
+    if embers > 0 then _G.ArmonCachedStats.embers = embers elseif _G.ArmonCachedStats.embers then embers = _G.ArmonCachedStats.embers end
+    wen = ryo
+
     return {
         level = level,
         wen = wen,
@@ -582,7 +598,7 @@ local function getPlayerData(blData)
     }
 end
 
-local function sendLiveSync()
+local function sendLiveSync(isOfflineMode)
     local blData = getBloodlinesData()
     local pData = getPlayerData(blData)
     local backpackItems = scanBackpack(blData)
@@ -596,6 +612,8 @@ local function sendLiveSync()
         end
     end)
 
+    local isOffline = isOfflineMode == true
+
     local payload = {
         apiKey = Config.api_key,
         game = Config.game,
@@ -604,16 +622,18 @@ local function sendLiveSync()
         pc = Config.pc_name,
         discordId = Config.discord_id,
         uptime = sessionUptime,
+        isOffline = isOffline,
         account = {
             username = player.Name,
             displayName = player.DisplayName,
             userId = player.UserId,
             placeId = Config.place_id,
-            uptime = sessionUptime,       -- ส่งระยะเวลาที่ออนไลน์จริงในเซสชันนี้
+            uptime = sessionUptime,
+            statusType = isOffline and "offline" or "online",
             level = pData.level,
             race = pData.race,
             bloodline = pData.bloodline, -- [รวมแล้ว] สายเลือดนินจา (เช่น Zetsu)
-            clan = pData.clan,           -- [รวมแล้ว] ชื่อแคลน
+            clan = pData.clan,           -- [รวมแล้ว] ชื่อแคลน (ไม่ว่างแน่นอน)
             clanRole = pData.clanRole ~= "" and pData.clanRole or nil,
             village = pData.village ~= "" and pData.village or nil,
             rank = pData.rank ~= "" and pData.rank or nil,
@@ -623,7 +643,7 @@ local function sendLiveSync()
             acumen = pData.acumen,
             embers = pData.embers,
             ember = pData.embers,
-            items = backpackItems,       -- รายการไอเทมทั้งหมดรวม Souls, Scrolls, Wraps
+            items = backpackItems,       -- รายการไอเทมครบถ้วน 100% แม้กระทั่งตอนสั่งปิดเกม
             stats = {
                 hp = pData.hp,
                 maxHp = pData.maxHp,
@@ -662,34 +682,10 @@ local function sendLiveSync()
     end)
 end
 
--- ฟังก์ชันแจ้งเตือนออฟไลน์ทันทีเมื่อผู้เล่นปิดเกม หรือออกจากเซิร์ฟเวอร์
+-- ฟังก์ชันแจ้งเตือนออฟไลน์ทันทีเมื่อผู้เล่นปิดเกม หรือออกจากเซิร์ฟเวอร์ (ส่งของครบ ไม่ถูกล้าง)
 local function sendOfflineNotice()
     pcall(function()
-        local payload = {
-            apiKey = Config.api_key,
-            game = Config.game,
-            placeId = Config.place_id,
-            pc = Config.pc_name,
-            discordId = Config.discord_id,
-            isOffline = true,
-            account = {
-                username = player.Name,
-                userId = player.UserId,
-                statusType = "offline"
-            }
-        }
-        local req = (syn and syn.request) or (http and http.request) or http_request or request
-        if req then
-            req({
-                Url = Config.api_url,
-                Method = "POST",
-                Headers = {
-                    ["Content-Type"] = "application/json",
-                    ["bypass-tunnel-reminder"] = "true"
-                },
-                Body = HttpService:JSONEncode(payload)
-            })
-        end
+        sendLiveSync(true)
     end)
 end
 
